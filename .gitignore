@@ -13,3 +13,6 @@ airflow.db
 .venv/.venv_committer_alert/
 .venv_committer_alert/
 __pycache__/
+.venv_committer_alert/
+.venv/
+__pycache__/

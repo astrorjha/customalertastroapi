@@ -8,3 +8,5 @@ airflow.db
 airflow.cfg
 .venv_committer_alert/
 .venv_committer_alert/
+.venv_committer_alert/
+.venv/
