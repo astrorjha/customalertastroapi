@@ -11,3 +11,5 @@ airflow.cfg
 airflow.db
 # ignore local venv
 .venv/.venv_committer_alert/
+.venv_committer_alert/
+__pycache__/
