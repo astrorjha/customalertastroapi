@@ -12,37 +12,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # capture committer e-mail
       - id: meta
-        run: echo "AUTHOR_EMAIL=${{ github.event.head_commit.author.email }}" >> $GITHUB_ENV
+        run: echo "AUTHOR_EMAIL=${{ github.event.head_commit.author.email }}" >> "$GITHUB_ENV"
 
-      # upsert e-mail channel
       - name: Upsert channel
         run: |
           CID=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
-            "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notificationChannels" \
-            | jq -r '.notificationChannels[] | select(.definition==env.AUTHOR_EMAIL) | .id')
+            "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels" |
+            jq -r --arg email "$AUTHOR_EMAIL" --arg dep "$DEPLOY_ID" '
+              .notificationChannels[]
+              | select(
+                  .deploymentId == $dep and
+                  (.definition.recipients[]? == $email)
+                ) .id // empty')
+
           if [ -z "$CID" ]; then
             CID=$(curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{"name":"demo-'${AUTHOR_EMAIL}'","type":"EMAIL","definition":"'${AUTHOR_EMAIL}'"}' \
-              https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notificationChannels \
-              | jq -r '.id')
+              -d '{
+                    "name": "demo-'${AUTHOR_EMAIL}'",
+                    "type": "EMAIL",
+                    "entityType": "DEPLOYMENT",
+                    "entityId": "'${DEPLOY_ID}'",
+                    "definition": { "recipients": ["'${AUTHOR_EMAIL}'"] }
+                  }' \
+              "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels" |
+              jq -r '.id')
           fi
-          echo "CHAN_ID=$CID" >> $GITHUB_ENV
 
-      # upsert DAG_FAILURE alert
+          echo "CHAN_ID=$CID" >> "$GITHUB_ENV"
+
       - name: Upsert alert
         run: |
-          curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d '{
-                  "entityId": "'${DEPLOY_ID}'",
-                  "entityType": "DEPLOYMENT",
-                  "name": "auto-committer-failure",
-                  "type": "DAG_FAILURE",
-                  "severity": "CRITICAL",
-                  "notificationChannelIds": ["'${CHAN_ID}'"],
-                  "rules": { "properties": { "deploymentId": "'${DEPLOY_ID}'" } }
-                }' \
-            https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts
+          ALERT_ID=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+            "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts?limit=100" |
+            jq -r --arg dep "$DEPLOY_ID" '
+              .alerts[] | select(
+                  .name == "auto-committer-failure" and
+                  .entityId == $dep
+                ) .id // empty')
+
+          ALERT_PAYLOAD='{
+            "entityId": "'${DEPLOY_ID}'",
+            "entityType": "DEPLOYMENT",
+            "name": "auto-committer-failure",
+            "type": "DAG_FAILURE",
+            "severity": "CRITICAL",
+            "notificationChannelIds": ["'${CHAN_ID}'"],
+            "rules": { "properties": { "deploymentId": "'${DEPLOY_ID}'" } }
+          }'
+
+          if [ -z "$ALERT_ID" ]; then
+            curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$ALERT_PAYLOAD" \
+              "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts" >/dev/null
+          else
+            curl -s -X PATCH -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$ALERT_PAYLOAD" \
+              "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts/$ALERT_ID" >/dev/null
+          fi
+### END ###
