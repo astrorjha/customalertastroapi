@@ -1,13 +1,12 @@
-# .github/workflows/alert-upsert.yml
 name: Rewire DAG failure alert to last committer
 
-# ─── Triggers ──────────────────────────────────────────────────────────────────
+# ─── Triggers ─────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# ─── Env & Secrets (set these under Settings → Secrets)─────────────────────────
+# ─── Env & Secrets (set via Settings → Secrets)────────────────────────────────
 env:
   ASTRO_ORG_ID:    ${{ secrets.ASTRO_ORG_ID }}
   ASTRO_DEPLOY_ID: ${{ secrets.ASTRO_DEPLOY_ID }}
@@ -21,27 +20,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Check out the repo so we have GITHUB_SHA & GITHUB_REPOSITORY
+      # 1️⃣ Checkout so we have GITHUB_SHA, GITHUB_REPOSITORY, etc.
       - name: 🚀 Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Figure out the real committer email
+      # 2️⃣ Determine the “true” committer email
       - name: 🔍 Determine committer email
         id: lookup-email
         run: |
           set -euxo pipefail
-          echo "▶ GITHUB_ACTOR = $GITHUB_ACTOR"
 
-          # Fast path: public commit author email
-          COMMIT_EMAIL=$(gh api /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} \
-            -q .commit.author.email || echo "")
+          # 2a) Fast path: public commit-author
+          COMMIT_EMAIL=$(gh api /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} -q .commit.author.email || echo "")
           if [[ -n "$COMMIT_EMAIL" && "$COMMIT_EMAIL" != "null" ]]; then
-            echo "▶ Using commit-author email: $COMMIT_EMAIL"
             echo "AUTHOR_EMAIL=$COMMIT_EMAIL" >>"$GITHUB_ENV"
             exit 0
           fi
 
-          # Fallback: GraphQL lookup of your primary email
+          # 2b) Fallback: GraphQL viewer { email }
           REAL_EMAIL=$(curl -s -X POST \
             -H "Authorization: Bearer $GH_EMAIL_TOKEN" \
             -H "Content-Type: application/json" \
@@ -49,30 +45,22 @@ jobs:
             https://api.github.com/graphql \
             | jq -r .data.viewer.email)
           if [[ -n "$REAL_EMAIL" && "$REAL_EMAIL" != "null" ]]; then
-            echo "▶ Fetched GitHub-profile email: $REAL_EMAIL"
             echo "AUTHOR_EMAIL=$REAL_EMAIL" >>"$GITHUB_ENV"
             exit 0
           fi
 
-          # Last-ditch: GitHub noreply
+          # 2c) Last-ditch: GitHub no-reply
           FALLBACK="${GITHUB_ACTOR}@users.noreply.github.com"
-          echo "▶ Falling back to: $FALLBACK"
           echo "AUTHOR_EMAIL=$FALLBACK" >>"$GITHUB_ENV"
 
-      # 3️⃣ Create or reuse the Astro notification channel
+      # 3️⃣ Create or reuse an Astro Notification Channel for that email
       - name: 🔔 Upsert Notification Channel
         id: upsert-channel
         run: |
           set -euxo pipefail
-          echo "▶ ORG_ID    = $ASTRO_ORG_ID"
-          echo "▶ DEPLOY_ID = $ASTRO_DEPLOY_ID"
-          echo "▶ AUTHOR_EMAIL = $AUTHOR_EMAIL"
 
-          # Fetch channels scoped to this deployment
           ALL_CH=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID&limit=100")
-
-          # Pick first existing channel for that email (head -n1 strips extra lines)
           CHANNEL_ID=$(echo "$ALL_CH" | jq -r --arg email "$AUTHOR_EMAIL" '
             .notificationChannels[]
             | select(.definition.recipients[]? == $email)
@@ -80,21 +68,12 @@ jobs:
           ' | head -n1)
 
           if [[ -z "$CHANNEL_ID" ]]; then
-            echo "▶ Creating new email channel for $AUTHOR_EMAIL"
             CREATE_RESP=$(curl -s -X POST \
               -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d '{
-                    "name":"dag-failure-'${AUTHOR_EMAIL}'",
-                    "type":"EMAIL",
-                    "entityType":"DEPLOYMENT",
-                    "entityId":"'"${ASTRO_DEPLOY_ID}"'",
-                    "definition":{ "recipients":["'"${AUTHOR_EMAIL}"'"] }
-                  }' \
+              -d "{\"name\":\"dag-failure-$AUTHOR_EMAIL\",\"type\":\"EMAIL\",\"entityType\":\"DEPLOYMENT\",\"entityId\":\"$ASTRO_DEPLOY_ID\",\"definition\":{\"recipients\":[\"$AUTHOR_EMAIL\"]}}" \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels")
             CHANNEL_ID=$(echo "$CREATE_RESP" | jq -r .id)
-          else
-            echo "▶ Reusing existing channel: $CHANNEL_ID"
           fi
 
           echo "CHANNEL_ID=$CHANNEL_ID" >>"$GITHUB_ENV"
@@ -103,48 +82,42 @@ jobs:
       - name: 🚨 Upsert DAG_FAILURE Alert
         run: |
           set -euxo pipefail
-          echo "▶ CHANNEL_ID = $CHANNEL_ID"
 
           dag_id="fail_demo_dag"  # ← replace with your real DAG ID
 
-          # Fetch any existing alerts for this deployment
           ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID&limit=100")
-
-          # Look for an existing DAG_FAILURE alert
           ALERT_ID=$(echo "$ALL_ALERTS" | jq -r '
             .alerts[]
             | select(.type=="DAG_FAILURE" and .entityId=="'"$ASTRO_DEPLOY_ID"'")
             | .id // empty
           ')
 
-          # Build the clean JSON payload via heredoc
+          # Build JSON payload in a clean heredoc (no stray comments or blank lines)
           read -r -d '' PAYLOAD <<EOF
 {
-  "entityType":"DEPLOYMENT",
-  "entityId":"$ASTRO_DEPLOY_ID",
-  "name":"auto-committer-dag-failure",
-  "type":"DAG_FAILURE",
-  "severity":"CRITICAL",
-  "notificationChannelIds":["$CHANNEL_ID"],
-  "rules":{
-    "properties":{
-      "deploymentId":"$ASTRO_DEPLOY_ID"
+  "entityType": "DEPLOYMENT",
+  "entityId": "$ASTRO_DEPLOY_ID",
+  "name": "auto-committer-dag-failure",
+  "type": "DAG_FAILURE",
+  "severity": "CRITICAL",
+  "notificationChannelIds": ["$CHANNEL_ID"],
+  "rules": {
+    "properties": {
+      "deploymentId": "$ASTRO_DEPLOY_ID"
     },
-    "patternMatches":[
+    "patternMatches": [
       {
-        "entityType":"DAG_ID",
-        "operatorType":"IS",
-        "values":["$dag_id"]
+        "entityType": "DAG_ID",
+        "operatorType": "IS",
+        "values": ["$dag_id"]
       }
     ]
   }
 }
 EOF
 
-          # Create or patch the alert
           if [[ -z "$ALERT_ID" ]]; then
-            echo "▶ Creating new DAG_FAILURE alert"
             curl -s -X POST \
               -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
@@ -152,7 +125,6 @@ EOF
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts" \
             | jq .
           else
-            echo "▶ Updating existing alert: $ALERT_ID"
             curl -s -X PATCH \
               -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
