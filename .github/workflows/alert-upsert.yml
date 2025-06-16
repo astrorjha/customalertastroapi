@@ -12,7 +12,6 @@ env:
 jobs:
   alert:
     runs-on: ubuntu-latest
-    # ← Add GH_TOKEN here so `gh api` picks it up automatically
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -23,19 +22,18 @@ jobs:
         run: |
           set -euxo pipefail
           echo "▶ GITHUB_ACTOR = $GITHUB_ACTOR"
-          # Always pull the author email from GitHub’s commit API
           AUTHOR_EMAIL=$(gh api \
             /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} \
             -q .commit.author.email)
           echo "▶ Resolved AUTHOR_EMAIL = $AUTHOR_EMAIL"
           echo "AUTHOR_EMAIL=$AUTHOR_EMAIL" >> "$GITHUB_ENV"
 
-      - name: Upsert channel
+      - name: Upsert Notification Channel
         run: |
           set -euxo pipefail
-          echo "▶ ORG_ID        = $ORG_ID"
-          echo "▶ DEPLOY_ID     = $DEPLOY_ID"
-          echo "▶ AUTHOR_EMAIL  = $AUTHOR_EMAIL"
+          echo "▶ ORG_ID       = $ORG_ID"
+          echo "▶ DEPLOY_ID    = $DEPLOY_ID"
+          echo "▶ AUTHOR_EMAIL = $AUTHOR_EMAIL"
 
           ALL_CH=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels?limit=100")
@@ -48,6 +46,7 @@ jobs:
           )
 
           if [ -z "$CID" ]; then
+            echo "▶ Creating channel for $AUTHOR_EMAIL"
             CREATE_RESP=$(curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d '{
@@ -60,15 +59,18 @@ jobs:
               "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels")
             echo "$CREATE_RESP" | jq .
             CID=$(echo "$CREATE_RESP" | jq -r '.id')
+          else
+            echo "▶ Found existing channel ID: $CID"
           fi
 
           echo "CHAN_ID=$CID" >> "$GITHUB_ENV"
 
-      - name: Upsert alert
+      - name: Upsert Alert
         run: |
           set -euxo pipefail
+          echo "▶ Fetching alerts scoped to this deployment only"
           ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
-            "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts?limit=100")
+            "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts?entityType=DEPLOYMENT&entityId=${DEPLOY_ID}&limit=100")
           echo "$ALL_ALERTS" | jq .
 
           ALERT_ID=$(echo "$ALL_ALERTS" | jq -r --arg dep "$DEPLOY_ID" '
@@ -89,12 +91,14 @@ jobs:
           echo "$ALERT_PAYLOAD" | jq .
 
           if [ -z "$ALERT_ID" ]; then
+            echo "▶ Creating alert auto-committer-failure"
             curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d "$ALERT_PAYLOAD" \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts" \
             | jq .
           else
+            echo "▶ Patching existing alert ID: $ALERT_ID"
             curl -s -X PATCH -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d "$ALERT_PAYLOAD" \
