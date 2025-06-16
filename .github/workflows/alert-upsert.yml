@@ -1,9 +1,8 @@
 name: Rewire DAG failure alert to last committer
 on:
   push:
-    branches: [main]    # or your primary branch
-    # you can also add:
-    # workflow_dispatch:  # to allow manual runs
+    branches: [main]
+  workflow_dispatch:
 
 env:
   ORG_ID: ${{ secrets.ASTRO_ORG_ID }}
@@ -19,42 +18,31 @@ jobs:
       - id: meta
         name: Capture committer email
         run: |
-          # Strict mode for safer scripting + debug prints
           set -euxo pipefail
-
-          # Try getting email from head_commit
-          echo "▶ GITHUB_SHA is $GITHUB_SHA"
-          echo "▶ HEAD_COMMIT_EMAIL = '${{ github.event.head_commit.author.email }}'"
-
-          # Fallback to GitHub API if head_commit.email is empty
-          if [ -z "${{ github.event.head_commit.author.email }}" ]; then
-            echo "▶ head_commit.email was empty — fetching via GitHub CLI"
-            AUTHOR_EMAIL=$(gh api \
-              /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} \
-              -q .commit.author.email)
-          else
-            AUTHOR_EMAIL="${{ github.event.head_commit.author.email }}"
-          fi
-
-          echo "▶ AUTHOR_EMAIL = '$AUTHOR_EMAIL'"
+          echo "▶ GITHUB_ACTOR = $GITHUB_ACTOR"
+          # Always pull the author email from GitHub’s commit API
+          AUTHOR_EMAIL=$(gh api \
+            /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} \
+            -q .commit.author.email)
+          echo "▶ Resolved AUTHOR_EMAIL = $AUTHOR_EMAIL"
           echo "AUTHOR_EMAIL=$AUTHOR_EMAIL" >> "$GITHUB_ENV"
 
       - name: Upsert channel
         run: |
           set -euxo pipefail
-          echo "▶ ORG_ID   = $ORG_ID"
-          echo "▶ DEPLOY_ID= $DEPLOY_ID"
-          echo "▶ ASTRO_API_TOKEN length = ${#ASTRO_API_TOKEN}"
-          echo "▶ AUTHOR_EMAIL = $AUTHOR_EMAIL"
+          echo "▶ ORG_ID        = $ORG_ID"
+          echo "▶ DEPLOY_ID     = $DEPLOY_ID"
+          echo "▶ ASTRO_API_TOKEN len = ${#ASTRO_API_TOKEN}"
+          echo "▶ AUTHOR_EMAIL  = $AUTHOR_EMAIL"
 
-          # Fetch all channels (with a higher limit)
+          # Fetch all channels (increase limit to avoid pagination)
           ALL_CH=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels?limit=100")
           echo "▶ All channels JSON:"
           echo "$ALL_CH" | jq .
 
-          # Try to find an existing channel for this email+deployment
-          CID=$(echo "$ALL_CH" | jq -r --arg email "$AUTHOR_EMAIL" --arg dep "$DEPLOY_ID" '
+          # Try to find an existing channel for this deployment+email
+          CID=$(echo "$ALL_CH" | jq -r --arg dep "$DEPLOY_ID" --arg email "$AUTHOR_EMAIL" '
             .notificationChannels[]
             | select(
                 .entityId == $dep and
@@ -64,7 +52,7 @@ jobs:
           )
 
           if [ -z "$CID" ]; then
-            echo "▶ No existing channel found — creating one"
+            echo "▶ No existing channel found—creating one"
             CREATE_RESP=$(curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d '{
@@ -88,23 +76,23 @@ jobs:
       - name: Upsert alert
         run: |
           set -euxo pipefail
-          echo "▶ ASTRO_API_TOKEN length = ${#ASTRO_API_TOKEN}"
-          echo "▶ ORG_ID    = $ORG_ID"
-          echo "▶ DEPLOY_ID = $DEPLOY_ID"
-          echo "▶ CHAN_ID   = $CHAN_ID"
+          echo "▶ ASTRO_API_TOKEN len = ${#ASTRO_API_TOKEN}"
+          echo "▶ ORG_ID              = $ORG_ID"
+          echo "▶ DEPLOY_ID           = $DEPLOY_ID"
+          echo "▶ CHAN_ID             = $CHAN_ID"
 
-          # Fetch existing alerts
+          # Fetch all alerts
           ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts?limit=100")
           echo "▶ All alerts JSON:"
           echo "$ALL_ALERTS" | jq .
 
-          # Look for ours
+          # Look for our DAG_FAILURE alert on this deployment
           ALERT_ID=$(echo "$ALL_ALERTS" | jq -r --arg dep "$DEPLOY_ID" '
             .alerts[]
             | select(
                 .name == "auto-committer-failure" and
-                (.entityId // .deploymentId) == $dep
+                ((.entityId // .deploymentId) == $dep)
               )
             | .id // empty'
           )
@@ -118,7 +106,6 @@ jobs:
             "notificationChannelIds": ["'${CHAN_ID}'"],
             "rules": { "properties": { "deploymentId": "'${DEPLOY_ID}'" } }
           }'
-
           echo "▶ ALERT_PAYLOAD:"
           echo "$ALERT_PAYLOAD" | jq .
 
