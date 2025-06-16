@@ -15,7 +15,8 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - id: meta
         name: Capture committer email
@@ -39,13 +40,13 @@ jobs:
             "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels?limit=100")
           echo "$ALL_CH" | jq .
 
-          CID=$(echo "$ALL_CH" | jq -r --arg dep "$DEPLOY_ID" --arg email "$AUTHOR_EMAIL" '
+          CHAN_ID=$(echo "$ALL_CH" | jq -r --arg dep "$DEPLOY_ID" --arg email "$AUTHOR_EMAIL" '
             .notificationChannels[]
             | select(.entityId==$dep and (.definition.recipients[]?==$email))
             | .id // empty'
           )
 
-          if [ -z "$CID" ]; then
+          if [ -z "$CHAN_ID" ]; then
             echo "▶ Creating channel for $AUTHOR_EMAIL"
             CREATE_RESP=$(curl -s -X POST -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
@@ -58,16 +59,17 @@ jobs:
                   }' \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/notification-channels")
             echo "$CREATE_RESP" | jq .
-            CID=$(echo "$CREATE_RESP" | jq -r '.id')
+            CHAN_ID=$(echo "$CREATE_RESP" | jq -r '.id')
           else
-            echo "▶ Found existing channel ID: $CID"
+            echo "▶ Found existing channel ID: $CHAN_ID"
           fi
 
-          echo "CHAN_ID=$CID" >> "$GITHUB_ENV"
+          echo "CHAN_ID=$CHAN_ID" >> "$GITHUB_ENV"
 
       - name: Upsert Alert
         run: |
           set -euxo pipefail
+          echo "▶ CHAN_ID      = $CHAN_ID"
           echo "▶ Fetching alerts scoped to this deployment only"
           ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ORG_ID/alerts?entityType=DEPLOYMENT&entityId=${DEPLOY_ID}&limit=100")
@@ -85,7 +87,7 @@ jobs:
             "name":"auto-committer-failure",
             "type":"DAG_FAILURE",
             "severity":"CRITICAL",
-            "notificationChannelIds":["'"${CID}"'"],
+            "notificationChannelIds":["'"${CHAN_ID}"'"],
             "rules":{"properties":{"deploymentId":"'"${DEPLOY_ID}"'"}}
           }'
           echo "$ALERT_PAYLOAD" | jq .
