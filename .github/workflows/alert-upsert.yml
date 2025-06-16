@@ -8,11 +8,11 @@ on:
 
 # ─── Env & Secrets (set via Settings → Secrets)────────────────────────────────
 env:
-  ASTRO_ORG_ID:    ${{ secrets.ASTRO_ORG_ID }}
+  ASTRO_ORG_ID: ${{ secrets.ASTRO_ORG_ID }}
   ASTRO_DEPLOY_ID: ${{ secrets.ASTRO_DEPLOY_ID }}
   ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}
-  GH_EMAIL_TOKEN:  ${{ secrets.GH_EMAIL_TOKEN }}
-  GH_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+  GH_EMAIL_TOKEN: ${{ secrets.GH_EMAIL_TOKEN }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   upsert-alert:
@@ -24,7 +24,7 @@ jobs:
       - name: 🚀 Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Determine the “true” committer email
+      # 2️⃣ Determine the "true" committer email
       - name: 🔍 Determine committer email
         id: lookup-email
         run: |
@@ -95,27 +95,27 @@ jobs:
 
           # Build JSON payload in a clean heredoc (no stray comments or blank lines)
           read -r -d '' PAYLOAD <<EOF
-{
-  "entityType": "DEPLOYMENT",
-  "entityId": "$ASTRO_DEPLOY_ID",
-  "name": "auto-committer-dag-failure",
-  "type": "DAG_FAILURE",
-  "severity": "CRITICAL",
-  "notificationChannelIds": ["$CHANNEL_ID"],
-  "rules": {
-    "properties": {
-      "deploymentId": "$ASTRO_DEPLOY_ID"
-    },
-    "patternMatches": [
-      {
-        "entityType": "DAG_ID",
-        "operatorType": "IS",
-        "values": ["$dag_id"]
-      }
-    ]
-  }
-}
-EOF
+          {
+            "entityType": "DEPLOYMENT",
+            "entityId": "$ASTRO_DEPLOY_ID",
+            "name": "auto-committer-dag-failure",
+            "type": "DAG_FAILURE",
+            "severity": "CRITICAL",
+            "notificationChannelIds": ["$CHANNEL_ID"],
+            "rules": {
+              "properties": {
+                "deploymentId": "$ASTRO_DEPLOY_ID"
+              },
+              "patternMatches": [
+                {
+                  "entityType": "DAG_ID",
+                  "operatorType": "IS",
+                  "values": ["$dag_id"]
+                }
+              ]
+            }
+          }
+          EOF
 
           if [[ -z "$ALERT_ID" ]]; then
             curl -s -X POST \
