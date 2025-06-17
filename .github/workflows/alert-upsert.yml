@@ -82,7 +82,7 @@ jobs:
           ALL_CH=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
             "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID&limit=100")
 
-          # Select channels you created (SERVICEKEY) for this email
+          # Select any channel matching the committer's email
           CHANNEL_ID=$(echo "$ALL_CH" | jq -r --arg email "$AUTHOR_EMAIL" '
             .notificationChannels[]
             | select(.definition.recipients[] == $email)
@@ -95,11 +95,11 @@ jobs:
               -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d '{
-                    "name":           "dag-failure-'${AUTHOR_EMAIL}'",
+                    "name":           "dag-failure-'"${AUTHOR_EMAIL}"'",
                     "type":           "EMAIL",
                     "entityType":     "DEPLOYMENT",
-                    "entityId":       "'${ASTRO_DEPLOY_ID}'",
-                    "definition":     { "recipients": ["'${AUTHOR_EMAIL}'"] }
+                    "entityId":       "'"${ASTRO_DEPLOY_ID}"'",
+                    "definition":     { "recipients": ["'"${AUTHOR_EMAIL}"'"] }
                   }' \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels" \
             | jq -r .id)
@@ -109,6 +109,14 @@ jobs:
           fi
 
           echo "CHANNEL_ID=$CHANNEL_ID" >> "$GITHUB_ENV"
+
+      # ───────────────────────────────────────────────────────────────────
+      # Debug dump: show what channels actually exist right now
+      - name: 🐛 Dump channels after upsert
+        run: |
+          curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+            "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID" \
+          | jq '.notificationChannels[] | {id, recipients: .definition.recipients}'
 
       # 4️⃣ Create or update the DAG_FAILURE Alert
       - name: 🚨 Upsert DAG_FAILURE Alert
