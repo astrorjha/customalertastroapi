@@ -69,6 +69,11 @@ jobs:
           # Export for downstream steps
           echo "AUTHOR_EMAIL=$AUTHOR_EMAIL" >> "$GITHUB_ENV"
 
+      # ───────────────────────────────────────────────────────────────────
+      # 🐞 Dump all environment variables right before channel upsert
+      - name: 🐞 Dump all env
+        run: env
+
       # 3️⃣ Create or reuse exactly one Notification Channel for this email
       - name: 🔔 Upsert Notification Channel
         id: upsert-channel
