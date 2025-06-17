@@ -85,10 +85,7 @@ jobs:
           # Select channels you created (SERVICEKEY) for this email
           CHANNEL_ID=$(echo "$ALL_CH" | jq -r --arg email "$AUTHOR_EMAIL" '
             .notificationChannels[]
-            | select(
-                .definition.recipients[] == $email
-                and .createdBy.subjectType=="SERVICEKEY"
-              )
+            | select(.definition.recipients[] == $email)
             | .id
           ' | head -n1)
 
