@@ -57,3 +57,5 @@ with DAG(
     )
 
     # No downstream dependencies – the DAG stops right here on failure
+
+    print("Test #1")
