@@ -19,9 +19,6 @@ Related tutorials
 -----------------
 * “Write your first DAG” → https://www.astronomer.io/docs/learn/get-started-with-airflow
 
-.. image:: https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg
-   :alt: International Space Station over Earth
-   :width: 400px
 """
 
 from __future__ import annotations
