@@ -18,8 +18,8 @@ on:
 # ─── Global Env & Secrets ────────────────────────
 env:
   ASTRO_ORG_ID: ${{ vars.ASTRO_ORG_ID }} # Your Astro Org ID
-  ASTRO_DEPLOY_ID: ${{ vars.ASTRO_DEPLOY_ID }}# Your Astro Deployment ID
-  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}# Token with Platform API perms
+  ASTRO_DEPLOY_ID: ${{ vars.ASTRO_DEPLOY_ID }} # Your Astro Deployment ID
+  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }} # Token with Platform API perms
   GH_EMAIL_TOKEN: ${{ secrets.GH_EMAIL_TOKEN }} # GitHub token for GraphQL fallback
 
 jobs:
