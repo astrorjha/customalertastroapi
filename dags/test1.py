@@ -1,4 +1,3 @@
-from airflow.sdk.definitions.asset import Asset
 from airflow.decorators import dag, task
 from pendulum import datetime
 import requests
