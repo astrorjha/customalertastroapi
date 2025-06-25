@@ -1,6 +1,12 @@
 # .github/workflows/alert-upsert.yml
 # Custom Alert Workflow: upserts an Astro DAG_FAILURE alert targeting
-# the true committer's email via a 4-step lookup (commit API → push event → GraphQL → no-reply).
+# the true committer's email via a 4-step lookup (REST API → push event → GraphQL → no-reply).
+#
+# Updates included:
+# • Multi-step approach using GitHub’s REST API, push-event, GraphQL (via GH_EMAIL_TOKEN), then no-reply fallback for getting GitHub Committer's email address
+# • Push a change to a dags/*.py file (to satisfy the CHANGED_FILES check).
+# • Allow the GitHub Action to run and upsert the alert config against that deployment.
+# • Then trigger a failure in that DAG run (manually or via schedule)—Astro will record a failure event and your alert definition will appear (and fire) in the UI.
 
 name: Rewire DAG failure alert to last committer
 
@@ -9,36 +15,63 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# ─── Global Env & Secrets (set these in Settings → Secrets) ────────────────────────
+# ─── Global Env & Secrets ────────────────────────
 env:
-  ASTRO_ORG_ID: ${{ vars.ASTRO_ORG_ID }} # Your Astro Org ID
-  ASTRO_DEPLOY_ID: ${{ vars.ASTRO_DEPLOY_ID }} # Your Astro Deployment ID
-  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }} # Token with Platform API perms
+  ASTRO_ORG_ID: ${{ vars.ASTRO_ORG_ID }}      # Your Astro Org ID
+  ASTRO_DEPLOY_ID: ${{ vars.ASTRO_DEPLOY_ID }}# Your Astro Deployment ID
+  ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}# Token with Platform API perms
+  GH_EMAIL_TOKEN: ${{ secrets.GH_EMAIL_TOKEN }} # GitHub token for GraphQL fallback
 
 jobs:
   upsert-alert:
     name: Upsert Astro DAG_FAILURE Alert
     runs-on: ubuntu-latest
 
-    # Bring in the push‐event email for quick lookup
+    # Bring in the push-event email for quick lookup
     env:
       PUSHER_EMAIL: ${{ github.event.pusher.email }}
 
     steps:
-      # 1️⃣ Checkout so we have $GITHUB_SHA, $GITHUB_ACTOR, etc.
+      # 1️⃣ Checkout so we have full history for git diff/log
       - name: 🚀 Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2️⃣ Extract true committer email via git log
-      - name: 🔍 Determine committer email from git
+      # 2️⃣ Determine the "true" committer email
+      - name: 🔍 Determine committer email
         id: lookup-email
         run: |
-          set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')
-          echo "Using git log committer email: $AUTHOR_EMAIL"
+          set -euxo pipefail
+          # 2a) Try commit’s author.email via REST API
+          COMMIT_EMAIL=$(gh api /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} -q .commit.author.email || echo "")
+          if [[ -n "$COMMIT_EMAIL" && "$COMMIT_EMAIL" != "null" ]]; then
+            echo "▶ Using commit-author email: $COMMIT_EMAIL"
+            AUTHOR_EMAIL="$COMMIT_EMAIL"
+          else
+            # 2b) Next, try the push-event pusher.email
+            if [[ -n "$PUSHER_EMAIL" && "$PUSHER_EMAIL" != "null" ]]; then
+              echo "▶ Using push-event pusher.email: $PUSHER_EMAIL"
+              AUTHOR_EMAIL="$PUSHER_EMAIL"
+            else
+              # 2c) Fallback: public profile via GraphQL
+              USER_EMAIL=$(curl -s -X POST \
+                -H "Authorization: Bearer $GH_EMAIL_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d '{"query":"query { viewer { email } }"}' \
+                https://api.github.com/graphql \
+                | jq -r .data.viewer.email || echo "")
+              if [[ -n "$USER_EMAIL" && "$USER_EMAIL" != "null" ]]; then
+                echo "▶ Using GraphQL viewer.email: $USER_EMAIL"
+                AUTHOR_EMAIL="$USER_EMAIL"
+              else
+                # 2d) Final fallback: GitHub no-reply
+                AUTHOR_EMAIL="${GITHUB_ACTOR}@users.noreply.github.com"
+                echo "▶ Falling back to no-reply: $AUTHOR_EMAIL"
+              fi
+            fi
+          fi
+          # Export for downstream steps
           echo "AUTHOR_EMAIL=$AUTHOR_EMAIL" >> "$GITHUB_ENV"
 
       # 3️⃣ Create or reuse exactly one Notification Channel for this email
@@ -60,7 +93,7 @@ jobs:
           ' | head -n1)
 
           if [[ -z "$CHANNEL_ID" ]]; then
-            echo "Creating new email channel for $AUTHOR_EMAIL"
+            echo "▶ Creating new email channel for $AUTHOR_EMAIL"
             CHANNEL_ID=$(curl -s -X POST \
               -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               -H "Content-Type: application/json" \
@@ -73,21 +106,31 @@ jobs:
                   }' \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels" \
             | jq -r .id)
-            echo "Created channel: $CHANNEL_ID"
+            echo "▶ Created channel: $CHANNEL_ID"
           else
-            echo "Reusing existing channel: $CHANNEL_ID"
+            echo "▶ Reusing existing channel: $CHANNEL_ID"
           fi
 
           echo "CHANNEL_ID=$CHANNEL_ID" >> "$GITHUB_ENV"
+
+      # Optional: Dump all environment variables for debugging
+      - name: 🐞 Dump all env
+        run: env
+
+      # Optional: Dump channels after upsert for debugging
+      - name: 🐛 Dump channels after upsert
+        run: |
+          curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+            "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/notification-channels?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID" \
+          | jq '.notificationChannels[] | {id, recipients: .definition.recipients}'
 
       # 4️⃣ Create or update the DAG_FAILURE Alert
       - name: 🚨 Upsert DAG_FAILURE Alert
         run: |
           set -euo pipefail
-          echo "CHANNEL_ID = $CHANNEL_ID"
+          echo "▶ CHANNEL_ID = $CHANNEL_ID"
 
-          # get changed files
-          # Get Python files in dags/ folder that changed in this commit
+          # get changed files (push a change to a dags/*.py file to satisfy this check)
           CHANGED_FILES=$(git diff --name-only "$GITHUB_SHA"^ "$GITHUB_SHA" | grep -E '^dags/.*\.py$' || true)
           if [[ -z "$CHANGED_FILES" ]]; then
             echo "⚠️ No DAGs changed in this commit. Exiting early."
@@ -97,17 +140,11 @@ jobs:
 
           # Parse DAG IDs from those files
           DAG_IDS=""
-          # find the DAG Ids
+          # find the DAG Ids via multiple matchers
           for file in $CHANGED_FILES; do
             echo "Checking $file"
-
-            # Match DAG('dag_id') or DAG("dag_id")
-            ids1=$(grep -oP 'DAG\s*\(\s*["'\'']([^"'\'']+)["'\'']' "$file" | sed -E 's/.*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
-
-            # Match @dag(dag_id="...")
-            ids2=$(grep -oP '@dag\s*\([^)]*dag_id\s*=\s*["'\'']([^"'\'']+)["'\'']' "$file" | sed -E 's/.*dag_id\s*=\s*["'"'"']([^"'"'"']+)["'"'"'].*/\1/' || true)
-
-            # Match @dag(...) followed by def my_dag():
+            ids1=$(grep -oP 'DAG\s*\(\s*["'"'']([^"'"'']+)["'"'']' "$file" | sed -E 's/.*["'"'']([^"'"'']+)["'"''].*/\1/' || true)
+            ids2=$(grep -oP '@dag\s*\([^)]*dag_id\s*=\s*["'"'']([^"'"'']+)["'"'']' "$file" | sed -E 's/.*dag_id\s*=\s*["'"'']([^"'"'']+)["'"''].*/\1/' || true)
             ids3=$(awk '
               /@dag\s*\(/ {found=1; next}
               found && /^def / {
@@ -117,36 +154,29 @@ jobs:
                 }
               }
             ' "$file" || true)
-
-            DAG_IDS="$DAG_IDS"$'\n'"$ids1"$'\n'"$ids2"$'\n'"$ids3"
+            DAG_IDS="$DAG_IDS"$'\n'"$ids1"$'\n'"$ids2"$'\n'"$ids3
           done
-
           # Clean up and dedupe
           DAG_IDS=$(echo "$DAG_IDS" | grep -v '^\s*$' | sort -u)
-
           if [[ -z "$DAG_IDS" ]]; then
-            echo "⚠️ No DAG IDs found in changed files. Exiting."
+            echo "⚠️ No DAG IDs found in changed files. Exiting."[0;J
             exit 0
           fi
-
           echo "Found DAGs:"
           echo "$DAG_IDS"
 
+          # Loop through each DAG ID and upsert alert
           for dag_id in $DAG_IDS; do
             echo "-- Processing alert for DAG: $dag_id --"
-
             # Fetch existing alert ID for this DAG
             ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID&limit=100")
-
             ALERT_ID=$(echo "$ALL_ALERTS" | jq -r --arg dagid "$dag_id" '
               .alerts[]
-              | select(.type=="DAG_FAILURE" and .entityId=="'"$ASTRO_DEPLOY_ID"'" and .rules.patternMatches[].values[] == $dagid)
+              | select(.type=="DAG_FAILURE" and .entityId=="'"$ASTRO_DEPLOY_ID"'") and .rules.patternMatches[].values[] == $dagid)
               | .id // empty
             ')
-
-
-
+            # Construct payload
             PAYLOAD=$(jq -n \
               --arg entType "DEPLOYMENT" \
               --arg entId  "$ASTRO_DEPLOY_ID" \
@@ -173,22 +203,7 @@ jobs:
                   ]
                 }
               }')
-
             if [[ -z "$ALERT_ID" ]]; then
-              echo "Creating new DAG_FAILURE alert for $dag_id"
-              echo "$PAYLOAD" | curl -s -X POST \
-                -H "Authorization: Bearer $ASTRO_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d @- \
-                "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts" \
-              | jq .
-            else
-              echo "Updating existing alert ($ALERT_ID) for $dag_id"
-              echo "$PAYLOAD" | curl -s -X POST \
-                -H "Authorization: Bearer $ASTRO_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d @- \
-                "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts/$ALERT_ID" \
-              | jq .
-            fi
-          done
+              echo "▶ Creating new DAG_FAILURE alert for $dag_id"
+              echo "Painld
+}]}
