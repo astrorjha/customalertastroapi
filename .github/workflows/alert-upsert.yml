@@ -142,8 +142,8 @@ jobs:
           DAG_IDS=""
           for file in $CHANGED_FILES; do
             echo "Checking $file"
-            ids1=$(grep -oP 'DAG\s*\(\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E 's/.*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
-            ids2=$(grep -oP '@dag\s*\([^)]*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E 's/.*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
+            ids1=$(grep -oP "DAG\s*\(\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E "s/.*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
+            ids2=$(grep -oP "@dag\s*\([^)]*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E "s/.*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
             ids3=$(awk '
               /@dag\s*\(/ {found=1; next}
               found && /^def / {

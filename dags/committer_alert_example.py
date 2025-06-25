@@ -7,7 +7,6 @@ This DAG intentionally raises a SQL error every run so you can:
 * test alerting/notification systems (e.g., Astro Platform alerts that e-mail
   the most-recent committer);
 * verify that the Airflow scheduler surfaces parse/run-time errors correctly;
-* illustrate dynamic task-mapping basics without side-effects.
 
 How it works
 ------------
