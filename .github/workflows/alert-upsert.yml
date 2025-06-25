@@ -38,40 +38,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2️⃣ Determine the "true" committer email
-      - name: 🔍 Determine committer email
+      # 2️⃣ Extract true committer email via git log
+      - name: 🔍 Determine committer email from git
         id: lookup-email
         run: |
-          set -euxo pipefail
-          # 2a) Try commit’s author.email via REST API
-          COMMIT_EMAIL=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" -q .commit.author.email || echo "")
-          if [[ -n "$COMMIT_EMAIL" && "$COMMIT_EMAIL" != "null" ]]; then
-            echo "▶ Using commit-author email: $COMMIT_EMAIL"
-            AUTHOR_EMAIL="$COMMIT_EMAIL"
-          else
-            # 2b) Next, try the push-event pusher.email
-            if [[ -n "$PUSHER_EMAIL" && "$PUSHER_EMAIL" != "null" ]]; then
-              echo "▶ Using push-event pusher.email: $PUSHER_EMAIL"
-              AUTHOR_EMAIL="$PUSHER_EMAIL"
-            else
-              # 2c) Fallback: public profile via GraphQL
-              USER_EMAIL=$(curl -s -X POST \
-                -H "Authorization: Bearer $GH_EMAIL_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d '{"query":"query { viewer { email } }"}' \
-                https://api.github.com/graphql \
-                | jq -r .data.viewer.email || echo "")
-              if [[ -n "$USER_EMAIL" && "$USER_EMAIL" != "null" ]]; then
-                echo "▶ Using GraphQL viewer.email: $USER_EMAIL"
-                AUTHOR_EMAIL="$USER_EMAIL"
-              else
-                # 2d) Final fallback: GitHub no-reply
-                AUTHOR_EMAIL="${GITHUB_ACTOR}@users.noreply.github.com"
-                echo "▶ Falling back to no-reply: $AUTHOR_EMAIL"
-              fi
-            fi
-          fi
-          # Export for downstream steps
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')
+          echo "Using git log committer email: $AUTHOR_EMAIL"
           echo "AUTHOR_EMAIL=$AUTHOR_EMAIL" >> "$GITHUB_ENV"
 
       # 3️⃣ Create or reuse exactly one Notification Channel for this email
