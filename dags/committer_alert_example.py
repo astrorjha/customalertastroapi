@@ -17,6 +17,7 @@ How it works
 Related tutorials
 -----------------
 * “Write your first DAG” → https://www.astronomer.io/docs/learn/get-started-with-airflow
+Test #1
 
 """
 
@@ -57,5 +58,3 @@ with DAG(
     )
 
     # No downstream dependencies – the DAG stops right here on failure
-
-    print("Test #1")
