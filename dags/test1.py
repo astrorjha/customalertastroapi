@@ -15,7 +15,7 @@ import requests
 def test1():
     @task()
     def get_astronauts():
-        print("this code version 2")
+        print("this code version 3")
     
     get_astronauts()
 
