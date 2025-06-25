@@ -79,5 +79,5 @@ def test_dag_retries(dag_id, dag, fileloc):
     test if a DAG has retries set
     """
     assert (
-        dag.default_args.get("retries", None) >= 3
-    ), f"{dag_id} in {fileloc} must have task retries >= 3."
+        dag.default_args.get("retries", None) >= 4
+    ), f"{dag_id} in {fileloc} must have task retries >= 4."
