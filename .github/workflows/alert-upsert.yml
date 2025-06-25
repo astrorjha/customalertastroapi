@@ -184,7 +184,7 @@ jobs:
               | jq .
             else
               echo "▶ Updating existing alert ($ALERT_ID) for $dag_id"
-              echo "$PAYLOAD" | curl -s -X PATCH \
+              echo "$PAYLOAD" | curl -s -X POST \
                 -H "Authorization: Bearer $ASTRO_API_TOKEN" \
                 -H "Content-Type: application/json" \
                 -d @- \
