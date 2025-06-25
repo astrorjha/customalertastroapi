@@ -17,7 +17,7 @@ on:
 
 # ─── Global Env & Secrets ────────────────────────
 env:
-  ASTRO_ORG_ID: ${{ vars.ASTRO_ORG_ID }}      # Your Astro Org ID
+  ASTRO_ORG_ID: ${{ vars.ASTRO_ORG_ID }} # Your Astro Org ID
   ASTRO_DEPLOY_ID: ${{ vars.ASTRO_DEPLOY_ID }}# Your Astro Deployment ID
   ASTRO_API_TOKEN: ${{ secrets.ASTRO_API_TOKEN }}# Token with Platform API perms
   GH_EMAIL_TOKEN: ${{ secrets.GH_EMAIL_TOKEN }} # GitHub token for GraphQL fallback
@@ -44,7 +44,7 @@ jobs:
         run: |
           set -euxo pipefail
           # 2a) Try commit’s author.email via REST API
-          COMMIT_EMAIL=$(gh api /repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA} -q .commit.author.email || echo "")
+          COMMIT_EMAIL=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" -q .commit.author.email || echo "")
           if [[ -n "$COMMIT_EMAIL" && "$COMMIT_EMAIL" != "null" ]]; then
             echo "▶ Using commit-author email: $COMMIT_EMAIL"
             AUTHOR_EMAIL="$COMMIT_EMAIL"
@@ -131,7 +131,7 @@ jobs:
           echo "▶ CHANNEL_ID = $CHANNEL_ID"
 
           # get changed files (push a change to a dags/*.py file to satisfy this check)
-          CHANGED_FILES=$(git diff --name-only "$GITHUB_SHA"^ "$GITHUB_SHA" | grep -E '^dags/.*\.py$' || true)
+          CHANGED_FILES=$(git diff --name-only "$GITHUB_SHA^" "$GITHUB_SHA" | grep -E '^dags/.*\.py$' || true)
           if [[ -z "$CHANGED_FILES" ]]; then
             echo "⚠️ No DAGs changed in this commit. Exiting early."
             exit 0
@@ -140,11 +140,10 @@ jobs:
 
           # Parse DAG IDs from those files
           DAG_IDS=""
-          # find the DAG Ids via multiple matchers
           for file in $CHANGED_FILES; do
             echo "Checking $file"
-            ids1=$(grep -oP 'DAG\s*\(\s*["'"'']([^"'"'']+)["'"'']' "$file" | sed -E 's/.*["'"'']([^"'"'']+)["'"''].*/\1/' || true)
-            ids2=$(grep -oP '@dag\s*\([^)]*dag_id\s*=\s*["'"'']([^"'"'']+)["'"'']' "$file" | sed -E 's/.*dag_id\s*=\s*["'"'']([^"'"'']+)["'"''].*/\1/' || true)
+            ids1=$(grep -oP 'DAG\s*\(\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E 's/.*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
+            ids2=$(grep -oP '@dag\s*\([^)]*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"]' "$file" | sed -E 's/.*dag_id\s*=\s*["\\'\\"]([^"\\'\\"]+)["\\'\\"].*/\1/' || true)
             ids3=$(awk '
               /@dag\s*\(/ {found=1; next}
               found && /^def / {
@@ -154,29 +153,26 @@ jobs:
                 }
               }
             ' "$file" || true)
-            DAG_IDS="$DAG_IDS"$'\n'"$ids1"$'\n'"$ids2"$'\n'"$ids3
+            DAG_IDS="$DAG_IDS"$'\n'"$ids1"$'\n'"$ids2"$'\n'"$ids3"
           done
-          # Clean up and dedupe
           DAG_IDS=$(echo "$DAG_IDS" | grep -v '^\s*$' | sort -u)
           if [[ -z "$DAG_IDS" ]]; then
-            echo "⚠️ No DAG IDs found in changed files. Exiting."[0;J
+            echo "⚠️ No DAG IDs found in changed files. Exiting."
             exit 0
           fi
           echo "Found DAGs:"
           echo "$DAG_IDS"
 
-          # Loop through each DAG ID and upsert alert
           for dag_id in $DAG_IDS; do
             echo "-- Processing alert for DAG: $dag_id --"
-            # Fetch existing alert ID for this DAG
             ALL_ALERTS=$(curl -s -H "Authorization: Bearer $ASTRO_API_TOKEN" \
               "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts?entityType=DEPLOYMENT&entityId=$ASTRO_DEPLOY_ID&limit=100")
-            ALERT_ID=$(echo "$ALL_ALERTS" | jq -r --arg dagid "$dag_id" '
+            ALERT_ID=$(echo "$ALL_ALERTS" | jq -r --arg dagid "$dag_id" --arg entId "$ASTRO_DEPLOY_ID" '
               .alerts[]
-              | select(.type=="DAG_FAILURE" and .entityId=="'"$ASTRO_DEPLOY_ID"'") and .rules.patternMatches[].values[] == $dagid)
+              | select(.type == "DAG_FAILURE" and .entityId == $entId and any(.rules.patternMatches[]?.values[]; . == $dagid))
               | .id // empty
             ')
-            # Construct payload
+
             PAYLOAD=$(jq -n \
               --arg entType "DEPLOYMENT" \
               --arg entId  "$ASTRO_DEPLOY_ID" \
@@ -186,24 +182,39 @@ jobs:
               --arg chId   "$CHANNEL_ID" \
               --arg dagid  "$dag_id" \
               '{
-                entityType:            $entType,
-                entityId:              $entId,
-                name:                  $name,
-                type:                  $dtype,
-                severity:              $sev,
-                notificationChannelIds:[ $chId ],
-                rules: {
+                entityType            : $entType,
+                entityId              : $entId,
+                name                  : $name,
+                type                  : $dtype,
+                severity              : $sev,
+                notificationChannelIds: [ $chId ],
+                rules : {
                   properties: { deploymentId: $entId },
                   patternMatches: [
                     {
-                      entityType:   "DAG_ID",
+                      entityType  : "DAG_ID",
                       operatorType: "IS",
-                      values:       [ $dagid ]
+                      values      : [ $dagid ]
                     }
                   ]
                 }
               }')
+
             if [[ -z "$ALERT_ID" ]]; then
               echo "▶ Creating new DAG_FAILURE alert for $dag_id"
-              echo "Painld
-}]}
+              echo "$PAYLOAD" | curl -s -X POST \
+                -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d @- \
+                "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts" \
+              | jq .
+            else
+              echo "▶ Updating existing alert ($ALERT_ID) for $dag_id"
+              echo "$PAYLOAD" | curl -s -X PATCH \
+                -H "Authorization: Bearer $ASTRO_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                -d @- \
+                "https://api.astronomer.io/platform/v1beta1/organizations/$ASTRO_ORG_ID/alerts/$ALERT_ID" \
+              | jq .
+            fi
+          done
